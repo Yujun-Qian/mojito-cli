@@ -102,6 +102,7 @@ bundled = {
     'create': 'mojito-create',
     'help': './commands/help',
     'info': './commands/info',
+    'verify': 'mojito-verify',
     'version': './commands/version'
 };
 
