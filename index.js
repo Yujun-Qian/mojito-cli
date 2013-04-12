@@ -7,33 +7,44 @@
 'use strict';
 
 var resolve = require('path').resolve,
-    log = require('./lib/log'),
     nopt = require('nopt'),
+
+    log = require('./lib/log'),
+    readpkg = require('./lib/readpkg'),
 
     options = {'help': Boolean, 'version': Boolean, 'debug': Boolean},
     aliases = {h: '--help', v: '--version', d: '--debug'},
-    readpkg = require('./lib/readpkg'),
-    bundled; // map of package name:require-string
-
-
-function getmeta(cwd) {
-    var cli = require('./package'),
-        meta = {};
-
-    log.debug('%s v%s at %s', cli.name, cli.version, __dirname);
-    meta.cli = {
-        name: cli.name,
-        description: cli.description,
-        binname: Object.keys(cli.bin)[0],
-        version: cli.version,
-        commands: Object.keys(bundled)
+    bundled = { // map of package name:require-string
+        'create': 'mojito-create',
+        'help': './commands/help',
+        'info': './commands/info',
+        'version': './commands/version'
     };
 
-    meta.app = readpkg(cwd);
-    if (meta.app) {
-        meta.mojito = readpkg.mojito(cwd);
+
+/**
+ * @param {string} path of process' current working directory
+ * @return {object} combined cli, app, and mojito metadata, see readpkg.js
+ */
+function getmeta(cwd) {
+    var isme = cwd === __dirname,
+        cli = readpkg(__dirname),
+        app = !isme && readpkg(cwd),
+        mojito = app && readpkg.mojito(cwd);
+
+    // convenience flag for when we have a mojito app but no mojito installed
+    if (app) {
+        app.needsMojito = app.dependencies.mojito && !mojito;
     }
-    return meta;
+
+    // save list of bundled commands for help
+    cli.commands = Object.keys(bundled);
+
+    return {
+        cli: cli,
+        app: app,
+        mojito: mojito
+    };
 }
 
 function altcmd(opts) {
@@ -49,30 +60,47 @@ function altcmd(opts) {
     return cmd;
 }
 
-function load(str, cmd) {
-    var mod;
+function tryRequire(str) {
+    var mod = false;
     try {
-        // require module by pathname, or by bundled command name
-        mod = require(str || bundled[cmd]);
+        mod = require(str);
+        log.debug('required %s', str);
     } catch(err) {
-        log.debug('unable to require %s', str || bundled[cmd]);
+        log.debug('unable to require %s', str);
     }
     return mod;
 }
 
-function exec(cmd, args, opts, meta, cb) {
-    var mod,
-        mojito_cmds = meta.mojito && meta.mojito.commands;
+/**
+ * @param {string} sub-command, like 'help', 'create', etc.
+ * @param {object} cli, app, and mojito, metadata
+ * @return {object|function} module loaded via `require`
+ */
+function load(cmd, meta) {
+    var mod = false,
+        mo_cmd_list = meta.mojito && meta.mojito.commands,
+        mo_cmd_path = mo_cmd_list && meta.mojito.commandsPath;
 
     if (bundled.hasOwnProperty(cmd)) {
-        log.debug('runnning bundled command %s', cmd);
-        mod = load(bundled[cmd]);
-        mod(args, opts, meta, cb);
+        mod = tryRequire(bundled[cmd]);
 
-    } else if (mojito_cmds && mojito_cmds.indexOf(cmd)) {
+    } else if (mo_cmd_list && (mo_cmd_list.indexOf(cmd) > -1)) {
+        mod = tryRequire(resolve(mo_cmd_path, cmd));
+    }
+
+    return mod;
+}
+
+function exec(cmd, args, opts, meta, cb) {
+    var mod = load(cmd, meta);
+
+    if (('object' === typeof mod) && ('run' in mod)) {
         log.debug('runnning legacy mojito command %s', cmd);
-        mod = load(resolve(mojito_cmds.path, cmd));
         mod.run(args, opts, cb);
+
+    } else if ('function' === typeof mod) {
+        log.debug('getting bundled command %s', cmd);
+        mod(args, opts, meta, cb);
 
     } else {
         cb('Unable to invoke command ' + cmd);
@@ -80,7 +108,7 @@ function exec(cmd, args, opts, meta, cb) {
 }
 
 function main(argv, cwd, cb) {
-    var opts = nopt(options, aliases, argv || [], 0),
+    var opts = nopt(options, aliases, argv, 0),
         args = opts.argv.remain,
         cmd = (args.shift() || '').toLowerCase();
 
@@ -93,19 +121,13 @@ function main(argv, cwd, cb) {
         cmd = altcmd(opts);
     }
 
-    log.debug('cmd: %s, opts: %j', cmd, opts);
+    log.debug('cmd: %s, args: %j, opts: %j', cmd, args, opts);
     exec(cmd, args, opts, getmeta(cwd), cb);
+
     return cmd;
 }
 
-bundled = {
-    'create': 'mojito-create',
-    'help': './commands/help',
-    'info': './commands/info',
-    'version': './commands/version'
-};
 
 module.exports = main;
-module.exports.log = log;
-module.exports.load = load;
 module.exports.getmeta = getmeta;
+module.exports.load = load; // help.js
